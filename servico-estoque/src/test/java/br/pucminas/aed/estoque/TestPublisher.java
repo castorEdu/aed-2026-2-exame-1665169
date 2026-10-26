@@ -82,4 +82,25 @@ public class TestPublisher {
 
         template.send(registro);
         template.flush();
-    }}
+    }
+
+    public void publicarRecusa(String topicoRecusa, String eventoId, String pedidoId, String motivo) {
+        String json = "{"
+                + "\"eventoId\":\"" + eventoId + "\","
+                + "\"ocorridoEm\":\"2026-08-03T22:15:10.000Z\","
+                + "\"pedidoId\":\"" + pedidoId + "\","
+                + "\"motivo\":\"" + motivo + "\""
+                + "}";
+
+        ProducerRecord<String, String> registro =
+                new ProducerRecord<String, String>(topicoRecusa, pedidoId, json);
+        registro.headers().add("ce_specversion", "1.0".getBytes(UTF_8));
+        registro.headers().add("ce_id", eventoId.getBytes(UTF_8));
+        registro.headers().add("ce_source", "/loja/servico-pedidos".getBytes(UTF_8));
+        registro.headers().add("ce_type", "loja.pagamento.recusado.v1".getBytes(UTF_8));
+        registro.headers().add("ce_time", "2026-08-03T22:15:10.000Z".getBytes(UTF_8));
+
+        template.send(registro);
+        template.flush();
+    }
+}

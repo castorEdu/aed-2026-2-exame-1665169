@@ -40,6 +40,16 @@ public class ResilienciaConfig {
     }
 
     @Bean
+    public NewTopic topicoDePagamentoRecusado(@Value("${demo.topico-pagamento-recusado}") String topico) {
+        return new NewTopic(topico, PARTICOES_DA_DLQ, REPLICAS_DA_DLQ);
+    }
+
+    @Bean
+    public NewTopic topicoDeReservaCancelada(@Value("${demo.topico-reserva-cancelada}") String topico) {
+        return new NewTopic(topico, PARTICOES_DA_DLQ, REPLICAS_DA_DLQ);
+    }
+
+    @Bean
     public KafkaTemplate<String, String> kafkaTemplate(KafkaProperties propriedades) {
         Map<String, Object> config = propriedades.buildProducerProperties(null);
         config.remove(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG);

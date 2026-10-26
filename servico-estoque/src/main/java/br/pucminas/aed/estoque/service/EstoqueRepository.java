@@ -1,9 +1,15 @@
 package br.pucminas.aed.estoque.service;
 
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.List;
+
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import br.pucminas.aed.estoque.domain.ItemDoPedidoVO;
 import br.pucminas.aed.estoque.domain.QuantidadeInvalidaException;
+import br.pucminas.aed.estoque.domain.ReservaDeEstoqueCanceladaEvent;
 import br.pucminas.aed.estoque.domain.SkuInexistenteException;
 
 /**
@@ -91,5 +97,77 @@ public class EstoqueRepository {
     public void redefinirEstoque(String sku, int quantidade) {
         jdbc.update("UPDATE estoque SET quantidade = ? WHERE sku = ?",
                 Integer.valueOf(quantidade), sku);
+    }
+
+    public void registrarReserva(String pedidoId, String sku, int quantidade) {
+        jdbc.update("INSERT INTO reserva (pedido_id, sku, quantidade) VALUES (?, ?, ?)",
+                pedidoId, sku, Integer.valueOf(quantidade));
+    }
+
+    public void devolverEstoque(String sku, int quantidade) {
+        int linhas = jdbc.update("UPDATE estoque SET quantidade = quantidade + ? WHERE sku = ?",
+                Integer.valueOf(quantidade), sku);
+        if (linhas == 0) {
+            throw new SkuInexistenteException(sku);
+        }
+    }
+
+    public List<ItemDoPedidoVO> buscarReservasAtivas(String pedidoId) {
+        return jdbc.query(
+                "SELECT sku, quantidade FROM reserva WHERE pedido_id = ? AND devolvida_em IS NULL ORDER BY id",
+                (rs, numLinha) -> new ItemDoPedidoVO(rs.getString("sku"), rs.getInt("quantidade")),
+                pedidoId);
+    }
+
+    public void marcarReservasDevolvidas(String pedidoId, String cancelamentoEventoId, Instant devolvidaEm) {
+        jdbc.update(
+                "UPDATE reserva SET devolvida_em = ?, cancelamento_evento_id = ? WHERE pedido_id = ? AND devolvida_em IS NULL",
+                Timestamp.from(devolvidaEm), cancelamentoEventoId, pedidoId);
+    }
+
+    public ReservaDeEstoqueCanceladaEvent buscarCancelamentoPendente(String pedidoId) {
+        List<String> metadados = jdbc.query(
+                "SELECT cancelamento_evento_id, devolvida_em FROM reserva WHERE pedido_id = ? AND devolvida_em IS NOT NULL AND cancelamento_publicado_em IS NULL ORDER BY id",
+                (rs, numLinha) -> rs.getString("cancelamento_evento_id") + "|" + rs.getTimestamp("devolvida_em").toInstant().toString(),
+                pedidoId);
+        if (metadados.isEmpty()) {
+            return null;
+        }
+        String[] partes = metadados.get(0).split("\\|", 2);
+        List<ItemDoPedidoVO> itens = jdbc.query(
+                "SELECT sku, quantidade FROM reserva WHERE pedido_id = ? AND cancelamento_evento_id = ? ORDER BY id",
+                (rs, numLinha) -> new ItemDoPedidoVO(rs.getString("sku"), rs.getInt("quantidade")),
+                pedidoId, partes[0]);
+        return new ReservaDeEstoqueCanceladaEvent(partes[0], Instant.parse(partes[1]), pedidoId, itens);
+    }
+
+    public void marcarCancelamentoPublicado(String pedidoId, String cancelamentoEventoId) {
+        jdbc.update(
+                "UPDATE reserva SET cancelamento_publicado_em = CURRENT_TIMESTAMP WHERE pedido_id = ? AND cancelamento_evento_id = ? AND cancelamento_publicado_em IS NULL",
+                pedidoId, cancelamentoEventoId);
+    }
+
+    public void limparReservas() {
+        jdbc.update("DELETE FROM reserva");
+    }
+
+    public long contarReservasAtivas(String pedidoId) {
+        Long total = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM reserva WHERE pedido_id = ? AND devolvida_em IS NULL",
+                Long.class, pedidoId);
+        if (total == null) {
+            return 0L;
+        }
+        return total.longValue();
+    }
+
+    public long contarReservasDevolvidas(String pedidoId) {
+        Long total = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM reserva WHERE pedido_id = ? AND devolvida_em IS NOT NULL",
+                Long.class, pedidoId);
+        if (total == null) {
+            return 0L;
+        }
+        return total.longValue();
     }
 }

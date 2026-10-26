@@ -19,8 +19,6 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
-import br.pucminas.aed.pedidos.domain.PedidoConfirmadoEvent;
-
 @Configuration
 public class PedidoConfig {
 
@@ -37,6 +35,11 @@ public class PedidoConfig {
      */
     @Bean
     public NewTopic topicoDePedidoConfirmado(@Value("${demo.topico}") String topico) {
+        return new NewTopic(topico, PARTICOES, REPLICAS);
+    }
+
+    @Bean
+    public NewTopic topicoDePagamentoRecusado(@Value("${demo.topico-pagamento-recusado}") String topico) {
         return new NewTopic(topico, PARTICOES, REPLICAS);
     }
 
@@ -72,11 +75,11 @@ public class PedidoConfig {
      * configuracao continua vindo do application.yml.
      */
     @Bean
-    public KafkaTemplate<String, PedidoConfirmadoEvent> kafkaTemplate(
+    public KafkaTemplate<String, Object> kafkaTemplate(
             KafkaProperties propriedades, ObjectMapper objectMapperDosEventos) {
 
-        JsonSerializer<PedidoConfirmadoEvent> serializadorDoValor =
-                new JsonSerializer<PedidoConfirmadoEvent>(objectMapperDosEventos);
+        JsonSerializer<Object> serializadorDoValor =
+                new JsonSerializer<Object>(objectMapperDosEventos);
 
         // NAO chame setAddTypeInfo(false) aqui: essa opcao ja vem do
         // application.yml (spring.json.add.type.headers). O JsonSerializer
@@ -90,10 +93,10 @@ public class PedidoConfig {
         config.remove(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG);
         config.remove(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG);
 
-        ProducerFactory<String, PedidoConfirmadoEvent> fabrica =
-                new DefaultKafkaProducerFactory<String, PedidoConfirmadoEvent>(
+        ProducerFactory<String, Object> fabrica =
+                new DefaultKafkaProducerFactory<String, Object>(
                         config, new StringSerializer(), serializadorDoValor);
 
-        return new KafkaTemplate<String, PedidoConfirmadoEvent>(fabrica);
+        return new KafkaTemplate<String, Object>(fabrica);
     }
 }

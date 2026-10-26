@@ -36,7 +36,7 @@ import br.pucminas.aed.pedidos.domain.PedidoConfirmadoEvent;
  * espera em whenComplete(resultado, erro): um dos dois vem preenchido.
  */
 public class PedidoCallbackService
-        implements BiConsumer<SendResult<String, PedidoConfirmadoEvent>, Throwable> {
+        implements BiConsumer<SendResult<String, Object>, Throwable> {
 
     private static final Logger log = LoggerFactory.getLogger(PedidoCallbackService.class);
 
@@ -47,7 +47,7 @@ public class PedidoCallbackService
     }
 
     @Override
-    public void accept(SendResult<String, PedidoConfirmadoEvent> resultado, Throwable erro) {
+    public void accept(SendResult<String, Object> resultado, Throwable erro) {
         if (erro != null) {
             log.error("FALHA ao publicar evento {}", evento.getEventoId(), erro);
             return;

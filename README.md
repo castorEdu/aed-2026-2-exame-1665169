@@ -1,6 +1,6 @@
 # Exame especial — como reproduzir
 
-Esta seção cobre a **Parte A** (caminho de falha). Os comandos assumem a raiz do
+Esta seção cobre a **Parte A** (caminho de falha) e a **Parte B** (compensação). Os comandos assumem a raiz do
 repositório, o ambiente de pé (`docker compose up -d`) e os dois serviços
 empacotados (`mvn -f servico-pedidos/pom.xml package -DskipTests` e
 `mvn -f servico-estoque/pom.xml package -DskipTests`), em dois terminais:
@@ -92,7 +92,8 @@ execução):
 ```text
 WARN  RegistroDeFalhas : falha na execucao 1  chave=4712  offset=0  causa=CannotCreateTransactionException: Could not open JDBC Connection for transaction
 WARN  RegistroDeFalhas : falha na execucao 2  chave=4712  offset=0  causa=CannotCreateTransactionException: Could not open JDBC Connection for transaction
-```n
+```
+
 **Religue o Postgres antes de esgotar a janela (cerca de 20 s):**
 
 ```powershell
@@ -103,7 +104,8 @@ Na próxima retentativa o evento é processado:
 
 ```text
 INFO  EstoqueService : reserva aplicada  evento=22222222-2222-2222-2222-222222222222  pedido=4712
-```n
+```
+
 O estoque de `TEC-002` cai em 2 e a DLQ continua sem o evento. Se o Postgres demorar mais que a
 janela, o evento vai para a DLQ com `dlq_excecao` apontando para a falha de
 conexão, e pode ser reprocessado como descrito abaixo.
@@ -132,6 +134,52 @@ o estoque de novo.
 - O reprocessamento lembra até onde leu (grupo `estoque-dlq-reprocessador`): rodar de novo não republica o que já foi republicado. Para reler tudo, use outro grupo: `--demo.dlq.grupo-reprocessador=outro-nome`.
 - Se o evento falhar de novo, ele volta para a DLQ.
 
+## Cenário 3 — compensação: pagamento recusado devolve a reserva
+
+1. Publique um pedido confirmado (`pedidoId = 4711`, reserva 1 unidade de `TEC-002`):
+
+```powershell
+curl.exe -s -w "`nHTTP %{http_code}`n" -X POST localhost:8080/pedidos/confirmados `
+  -H "Content-Type: application/json" -d "@pedidos/pedido-4711.json"
+```
+
+2. Confira o estoque (`TEC-002` cai para 99) e a linha criada em `reserva` (`devolvida_em` nulo):
+
+```powershell
+docker compose exec postgres psql -U aed -d aed -c "select * from estoque; select pedido_id, sku, quantidade, reservada_em, devolvida_em, cancelamento_evento_id from reserva;"
+```
+
+3. Publique a recusa do pagamento (`PagamentoRecusado` em `loja.pagamento.recusado.v1`):
+
+```powershell
+curl.exe -s -w "`nHTTP %{http_code}`n" -X POST localhost:8080/pedidos/pagamentos-recusados `
+  -H "Content-Type: application/json" -d "@pedidos/pagamento-recusado-4711.json"
+```
+
+4. Saída esperada:
+
+- `HTTP 202`;
+- no terminal do `servico-estoque`:
+
+  ```text
+  INFO  EstoqueService : reserva devolvida  evento=33333333-3333-3333-3333-333333333333  pedido=4711  cancelamento=...
+  INFO  ReservaCanceladaPublisherService : publicado  evento=...  pedido=4711  particao=...  offset=...
+  ```
+
+- no banco, a quantidade de `TEC-002` volta a 100 e a reserva permanece registrada com `devolvida_em` e `cancelamento_evento_id` preenchidos (sem `DELETE`):
+
+```powershell
+docker compose exec postgres psql -U aed -d aed -c "select * from estoque; select pedido_id, sku, quantidade, reservada_em, devolvida_em, cancelamento_evento_id, cancelamento_publicado_em from reserva;"
+```
+
+- no tópico `loja.estoque.reservacancelada.v1` (Kafka UI em <http://localhost:8081> ou console), aparece o evento `ReservaDeEstoqueCancelada` com cabeçalhos CloudEvents (`ce_specversion=1.0`, `ce_id`, `ce_source=/loja/servico-estoque`, `ce_type=loja.estoque.reservacancelada.v1`, `ce_time` em ISO-8601):
+
+```powershell
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9094 --topic loja.estoque.reservacancelada.v1 --from-beginning --timeout-ms 5000 --property print.headers=true --property print.key=true
+```
+
+- se o comando do passo 3 for executado uma segunda vez (reentrega do mesmo `PagamentoRecusado`), o estoque permanece em 100 e nenhum novo evento é publicado.
+
 ## Testes automatizados
 
 ```bash
@@ -149,6 +197,10 @@ Kafka embutido e H2, sem Docker. Os intervalos de espera são reduzidos nos test
 | `CaminhoDeFalhaTest` 5 | JSON inválido vai à DLQ com o corpo original |
 | `ReprocessamentoDlqTest` 6 | evento da DLQ volta ao tópico com o mesmo `ce_id` e é processado depois da correção |
 | `ReprocessamentoDlqTest` 7 | segunda execução do reprocessamento não republica nada |
+| `CompensacaoTest` 1 | Cenário 3: `PagamentoRecusado` devolve a quantidade reservada e publica `ReservaDeEstoqueCancelada` com cabeçalhos CloudEvents e ISO-8601 |
+| `CompensacaoTest` 2 | mesma recusa entregue duas vezes (e segunda recusa para o mesmo pedido) devolve o estoque uma só vez e publica um só evento |
+| `CompensacaoTest` 3 | recusa de pedido sem reserva não altera o estoque e não publica cancelamento |
+| `CompensacaoTest` 4 | queda após devolver o estoque e antes de publicar: a reentrega publica `ReservaDeEstoqueCancelada` pendente sem devolver o estoque duas vezes |
 
 ---
 # Aula 01 — Demonstração: o consumidor idempotente

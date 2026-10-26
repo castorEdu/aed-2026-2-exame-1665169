@@ -1,5 +1,7 @@
 demo:
   topico: loja.pedido.confirmado.v1
+  topico-pagamento-recusado: loja.pagamento.recusado.v1
+  topico-reserva-cancelada: loja.estoque.reservacancelada.v1
   sku: TEC-002
   # Passo 3 do roteiro: suba este servico com --demo.deduplicacao-ativa=false
   # para mostrar a cobranca dupla acontecendo.

@@ -73,6 +73,23 @@ public class ObservadorDeTopico {
         return comCeId(ceId).get(0);
     }
 
+    public List<ConsumerRecord<String, String>> comChave(String chave) {
+        List<ConsumerRecord<String, String>> encontrados = new ArrayList<ConsumerRecord<String, String>>();
+        for (ConsumerRecord<String, String> registro : lerTudo()) {
+            if (chave.equals(registro.key())) {
+                encontrados.add(registro);
+            }
+        }
+        return encontrados;
+    }
+
+    public ConsumerRecord<String, String> aguardarComChave(String chave) {
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(30))
+                .pollInterval(Duration.ofMillis(500))
+                .until(() -> !comChave(chave).isEmpty());
+        return comChave(chave).get(0);
+    }
     public static String cabecalho(ConsumerRecord<String, String> registro, String nome) {
         Header cabecalho = registro.headers().lastHeader(nome);
         if (cabecalho == null) {

@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
+import br.pucminas.aed.pedidos.domain.PagamentoRecusadoEvent;
 import br.pucminas.aed.pedidos.domain.PedidoConfirmadoEvent;
 
 /**
@@ -32,17 +33,21 @@ import br.pucminas.aed.pedidos.domain.PedidoConfirmadoEvent;
 public class PedidoService {
 
     private static final String TIPO_DO_EVENTO = "loja.pedido.confirmado.v1";
+    private static final String TIPO_PAGAMENTO_RECUSADO = "loja.pagamento.recusado.v1";
     private static final String ORIGEM = "/loja/servico-pedidos";
     private static final String VERSAO_CLOUDEVENTS = "1.0";
 
     /** Cliente que fala com o broker. O broker e o servidor Kafka, la fora. */
-    private final KafkaTemplate<String, PedidoConfirmadoEvent> clienteDoBroker;
+    private final KafkaTemplate<String, Object> clienteDoBroker;
     private final String topico;
+    private final String topicoPagamentoRecusado;
 
-    public PedidoService(KafkaTemplate<String, PedidoConfirmadoEvent> clienteDoBroker,
-                         @Value("${demo.topico}") String topico) {
+    public PedidoService(KafkaTemplate<String, Object> clienteDoBroker,
+                         @Value("${demo.topico}") String topico,
+                         @Value("${demo.topico-pagamento-recusado}") String topicoPagamentoRecusado) {
         this.clienteDoBroker = clienteDoBroker;
         this.topico = topico;
+        this.topicoPagamentoRecusado = topicoPagamentoRecusado;
     }
 
     /**
@@ -53,8 +58,8 @@ public class PedidoService {
      */
     public void confirmar(PedidoConfirmadoEvent evento) {
 
-        ProducerRecord<String, PedidoConfirmadoEvent> registro =
-                new ProducerRecord<String, PedidoConfirmadoEvent>(
+        ProducerRecord<String, Object> registro =
+                new ProducerRecord<String, Object>(
                         topico,
                         evento.getPedidoId(),   // mesma chave -> mesma particao -> ordem por pedido
                         evento);
@@ -79,6 +84,23 @@ public class PedidoService {
         // O retorno de send() E tratado, por um objeto com nome. Ignora-lo seria
         // deixar a falha de publicacao passar em silencio.
         PedidoCallbackService aoConcluir = new PedidoCallbackService(evento);
+        clienteDoBroker.send(registro).whenComplete(aoConcluir);
+    }
+
+    public void recusarPagamento(PagamentoRecusadoEvent evento) {
+        ProducerRecord<String, Object> registro =
+                new ProducerRecord<String, Object>(
+                        topicoPagamentoRecusado,
+                        evento.getPedidoId(),
+                        evento);
+
+        registro.headers().add("ce_specversion", VERSAO_CLOUDEVENTS.getBytes(UTF_8));
+        registro.headers().add("ce_id", evento.getEventoId().getBytes(UTF_8));
+        registro.headers().add("ce_source", ORIGEM.getBytes(UTF_8));
+        registro.headers().add("ce_type", TIPO_PAGAMENTO_RECUSADO.getBytes(UTF_8));
+        registro.headers().add("ce_time", evento.getOcorridoEm().toString().getBytes(UTF_8));
+
+        PagamentoRecusadoCallbackService aoConcluir = new PagamentoRecusadoCallbackService(evento);
         clienteDoBroker.send(registro).whenComplete(aoConcluir);
     }
 }

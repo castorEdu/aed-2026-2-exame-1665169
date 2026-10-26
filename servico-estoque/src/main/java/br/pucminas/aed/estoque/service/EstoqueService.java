@@ -1,6 +1,8 @@
 package br.pucminas.aed.estoque.service;
 
+import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -8,7 +10,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import br.pucminas.aed.estoque.domain.ItemDoPedidoVO;
+import br.pucminas.aed.estoque.domain.PagamentoRecusadoEvent;
 import br.pucminas.aed.estoque.domain.PedidoConfirmadoEvent;
+import br.pucminas.aed.estoque.domain.ReservaDeEstoqueCanceladaEvent;
 
 /**
  * O coracao da demonstracao.
@@ -61,6 +65,50 @@ public class EstoqueService {
         List<ItemDoPedidoVO> itens = evento.getItens();
         for (ItemDoPedidoVO item : itens) {
             repositorio.reservar(item.getSku(), item.getQuantidade());
+            repositorio.registrarReserva(evento.getPedidoId(), item.getSku(), item.getQuantidade());
         }
+    }
+
+    @Transactional
+    public ReservaDeEstoqueCanceladaEvent compensar(String eventoId, PagamentoRecusadoEvent evento) {
+        if (modo.isDeduplicacaoAtiva()) {
+            boolean primeiraVez = repositorio.registrarEventoSeNovo(eventoId);
+            if (!primeiraVez) {
+                ReservaDeEstoqueCanceladaEvent pendente =
+                        repositorio.buscarCancelamentoPendente(evento.getPedidoId());
+                if (pendente != null) {
+                    log.info("retomando publicacao pendente  evento={}  pedido={}",
+                            pendente.getEventoId(), evento.getPedidoId());
+                    return pendente;
+                }
+                log.info("evento {} JA PROCESSADO, descartando em silencio", eventoId);
+                return null;
+            }
+        } else {
+            log.warn("deduplicacao DESLIGADA - compensando {} sem verificar", eventoId);
+        }
+
+        List<ItemDoPedidoVO> reservas = repositorio.buscarReservasAtivas(evento.getPedidoId());
+        if (reservas.isEmpty()) {
+            log.info("nenhuma reserva ativa para pedido={}, nada a devolver", evento.getPedidoId());
+            return null;
+        }
+
+        for (ItemDoPedidoVO item : reservas) {
+            repositorio.devolverEstoque(item.getSku(), item.getQuantidade());
+        }
+
+        String cancelamentoId = UUID.randomUUID().toString();
+        Instant agora = Instant.now();
+        repositorio.marcarReservasDevolvidas(evento.getPedidoId(), cancelamentoId, agora);
+
+        log.info("reserva devolvida  evento={}  pedido={}  cancelamento={}",
+                eventoId, evento.getPedidoId(), cancelamentoId);
+        return new ReservaDeEstoqueCanceladaEvent(cancelamentoId, agora, evento.getPedidoId(), reservas);
+    }
+
+    @Transactional
+    public void confirmarPublicacaoDoCancelamento(ReservaDeEstoqueCanceladaEvent evento) {
+        repositorio.marcarCancelamentoPublicado(evento.getPedidoId(), evento.getEventoId());
     }
 }

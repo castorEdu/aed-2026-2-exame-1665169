@@ -8,11 +8,13 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 
-import br.pucminas.aed.estoque.config.CabecalhosDaDlq;
 import br.pucminas.aed.estoque.domain.EventoMalformadoException;
+import br.pucminas.aed.estoque.domain.PagamentoRecusadoEvent;
 import br.pucminas.aed.estoque.domain.PedidoConfirmadoEvent;
+import br.pucminas.aed.estoque.domain.ReservaDeEstoqueCanceladaEvent;
 import br.pucminas.aed.estoque.service.EstoqueService;
 import br.pucminas.aed.estoque.service.PedidoConfirmadoLeitor;
+import br.pucminas.aed.estoque.service.ReservaCanceladaPublisherService;
 
 /**
  * O consumidor que aguenta receber duas vezes.
@@ -37,10 +39,14 @@ public class EstoqueListener {
 
     private final EstoqueService estoqueService;
     private final PedidoConfirmadoLeitor leitor;
+    private final ReservaCanceladaPublisherService publicadorDeCancelamento;
 
-    public EstoqueListener(EstoqueService estoqueService, PedidoConfirmadoLeitor leitor) {
+    public EstoqueListener(EstoqueService estoqueService,
+                           PedidoConfirmadoLeitor leitor,
+                           ReservaCanceladaPublisherService publicadorDeCancelamento) {
         this.estoqueService = estoqueService;
         this.leitor = leitor;
+        this.publicadorDeCancelamento = publicadorDeCancelamento;
     }
 
     @KafkaListener(topics = "${demo.topico}", groupId = "estoque",
@@ -57,6 +63,26 @@ public class EstoqueListener {
         estoqueService.processar(eventoId, evento);
 
         ack.acknowledge();   // confirma DEPOIS do commit da transacao
+    }
+
+    @KafkaListener(topics = "${demo.topico-pagamento-recusado}", groupId = "estoque",
+            autoStartup = "#{!${demo.reprocessar-dlq:false}}")
+    public void aoRecusarPagamento(ConsumerRecord<String, String> registro,
+                                   Acknowledgment ack) {
+
+        String eventoId = lerCabecalho(registro, CABECALHO_ID);
+        if (eventoId == null || eventoId.isBlank()) {
+            throw new EventoMalformadoException("cabecalho ce_id ausente");
+        }
+        PagamentoRecusadoEvent evento = leitor.lerPagamentoRecusado(registro.value());
+
+        ReservaDeEstoqueCanceladaEvent cancelamento = estoqueService.compensar(eventoId, evento);
+        if (cancelamento != null) {
+            publicadorDeCancelamento.publicar(cancelamento);
+            estoqueService.confirmarPublicacaoDoCancelamento(cancelamento);
+        }
+
+        ack.acknowledge();
     }
 
     /** Le um cabecalho da mensagem e converte de bytes para texto. */

@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
+import br.pucminas.aed.pedidos.domain.PagamentoRecusadoEvent;
 import br.pucminas.aed.pedidos.domain.PedidoConfirmadoEvent;
 import br.pucminas.aed.pedidos.service.PedidoService;
 
@@ -49,5 +50,11 @@ public class PedidoController {
     @ResponseStatus(HttpStatus.ACCEPTED)
     public void confirmarPedido(@RequestBody PedidoConfirmadoEvent evento) {
         pedidoService.confirmar(evento);
+    }
+
+    @PostMapping("/pagamentos-recusados")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    public void recusarPagamento(@RequestBody PagamentoRecusadoEvent evento) {
+        pedidoService.recusarPagamento(evento);
     }
 }

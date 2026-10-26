@@ -1,5 +1,6 @@
 demo:
   topico: loja.pedido.confirmado.v1
+  topico-pagamento-recusado: loja.pagamento.recusado.v1
 
 spring:
   application:
