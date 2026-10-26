@@ -4,6 +4,16 @@ demo:
   # Passo 3 do roteiro: suba este servico com --demo.deduplicacao-ativa=false
   # para mostrar a cobranca dupla acontecendo.
   deduplicacao-ativa: true
+  topico-dlq: ${demo.topico}.dlq
+  reprocessar-dlq: false
+  dlq:
+    grupo-reprocessador: estoque-dlq-reprocessador
+  retentativa:
+    max-retentativas: 3
+    espera-inicial-ms: 2000
+    multiplicador: 2.0
+    espera-maxima-ms: 10000
+    espera-fixa-ms: 1000
 
 spring:
   application:
@@ -17,6 +27,8 @@ spring:
     url: jdbc:postgresql://localhost:15432/aed
     username: aed
     password: aed
+    hikari:
+      connection-timeout: 2000
   sql:
     init:
       mode: always          # cria e popula as tabelas a cada subida
@@ -29,15 +41,8 @@ spring:
       auto-offset-reset: earliest
       enable-auto-commit: false       # quem confirma o offset e o nosso codigo
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       properties:
-        # Ignora qualquer cabecalho de tipo que venha do produtor: a classe a
-        # usar e a NOSSA, nao a dele. E o que permite que os dois servicos
-        # tenham classes diferentes para o mesmo evento.
-        spring.json.use.type.headers: false
-        spring.json.value.default.type: br.pucminas.aed.estoque.domain.PedidoConfirmadoEvent
-        spring.json.trusted.packages: br.pucminas.aed.estoque.domain
-
         # ARMADILHA DE DEMONSTRACAO AO VIVO.
         # Quem cria o topico e o servico-pedidos. Se este consumidor subir antes
         # disso, ele recebe UNKNOWN_TOPIC_OR_PARTITION e so tenta de novo quando

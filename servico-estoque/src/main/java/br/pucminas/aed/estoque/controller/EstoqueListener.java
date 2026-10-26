@@ -8,8 +8,11 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.stereotype.Component;
 
+import br.pucminas.aed.estoque.config.CabecalhosDaDlq;
+import br.pucminas.aed.estoque.domain.EventoMalformadoException;
 import br.pucminas.aed.estoque.domain.PedidoConfirmadoEvent;
 import br.pucminas.aed.estoque.service.EstoqueService;
+import br.pucminas.aed.estoque.service.PedidoConfirmadoLeitor;
 
 /**
  * O consumidor que aguenta receber duas vezes.
@@ -33,24 +36,31 @@ public class EstoqueListener {
     private static final String CABECALHO_ID = "ce_id";
 
     private final EstoqueService estoqueService;
+    private final PedidoConfirmadoLeitor leitor;
 
-    public EstoqueListener(EstoqueService estoqueService) {
+    public EstoqueListener(EstoqueService estoqueService, PedidoConfirmadoLeitor leitor) {
         this.estoqueService = estoqueService;
+        this.leitor = leitor;
     }
 
-    @KafkaListener(topics = "${demo.topico}", groupId = "estoque")
-    public void aoConfirmarPedido(ConsumerRecord<String, PedidoConfirmadoEvent> registro,
+    @KafkaListener(topics = "${demo.topico}", groupId = "estoque",
+            autoStartup = "#{!${demo.reprocessar-dlq:false}}")
+    public void aoConfirmarPedido(ConsumerRecord<String, String> registro,
                                   Acknowledgment ack) {
 
         String eventoId = lerCabecalho(registro, CABECALHO_ID);
+        if (eventoId == null || eventoId.isBlank()) {
+            throw new EventoMalformadoException("cabecalho ce_id ausente");
+        }
+        PedidoConfirmadoEvent evento = leitor.ler(registro.value());
 
-        estoqueService.processar(eventoId, registro.value());
+        estoqueService.processar(eventoId, evento);
 
         ack.acknowledge();   // confirma DEPOIS do commit da transacao
     }
 
     /** Le um cabecalho da mensagem e converte de bytes para texto. */
-    private String lerCabecalho(ConsumerRecord<String, PedidoConfirmadoEvent> registro,
+    private String lerCabecalho(ConsumerRecord<String, String> registro,
                                 String nome) {
         Header cabecalho = registro.headers().lastHeader(nome);
         if (cabecalho == null) {

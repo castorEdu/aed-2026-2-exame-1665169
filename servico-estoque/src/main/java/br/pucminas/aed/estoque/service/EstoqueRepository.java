@@ -3,6 +3,9 @@ package br.pucminas.aed.estoque.service;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import br.pucminas.aed.estoque.domain.QuantidadeInvalidaException;
+import br.pucminas.aed.estoque.domain.SkuInexistenteException;
+
 /**
  * Toda a persistencia deste servico, num lugar so.
  *
@@ -65,8 +68,14 @@ public class EstoqueRepository {
 
     /** O efeito de negocio: baixar a quantidade reservada. */
     public void reservar(String sku, int quantidade) {
-        jdbc.update("UPDATE estoque SET quantidade = quantidade - ? WHERE sku = ?",
+        if (quantidade <= 0) {
+            throw new QuantidadeInvalidaException(sku, quantidade);
+        }
+        int linhas = jdbc.update("UPDATE estoque SET quantidade = quantidade - ? WHERE sku = ?",
                 Integer.valueOf(quantidade), sku);
+        if (linhas == 0) {
+            throw new SkuInexistenteException(sku);
+        }
     }
 
     public int quantidadeEmEstoque(String sku) {

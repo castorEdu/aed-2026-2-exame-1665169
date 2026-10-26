@@ -1,3 +1,156 @@
+# Exame especial — como reproduzir
+
+Esta seção cobre a **Parte A** (caminho de falha). Os comandos assumem a raiz do
+repositório, o ambiente de pé (`docker compose up -d`) e os dois serviços
+empacotados (`mvn -f servico-pedidos/pom.xml package -DskipTests` e
+`mvn -f servico-estoque/pom.xml package -DskipTests`), em dois terminais:
+
+```bash
+java -jar servico-pedidos/target/servico-pedidos-1.0.jar
+java -jar servico-estoque/target/servico-estoque-1.0.jar
+```
+
+## O que o `servico-estoque` faz quando o evento falha
+
+| Falha | Exemplo | Retenta? | Destino |
+|---|---|---|---|
+| Permanente | SKU que não existe em `estoque` (`SkuInexistenteException`), quantidade ≤ 0 (`QuantidadeInvalidaException`), JSON ilegível ou sem `ce_id` (`EventoMalformadoException`) | não | `loja.pedido.confirmado.v1.dlq`, na primeira falha |
+| Transitória | Postgres fora do ar (`docker compose stop postgres`) | sim, até 3 retentativas | volta ao fluxo se a causa passar; vai à DLQ se esgotar |
+| Inesperada | qualquer outra exceção | sim, até 3 retentativas | DLQ se esgotar |
+
+Política de retentativa, configurada em `servico-estoque/src/main/resources/application.yml`
+(`demo.retentativa.*`) e montada em `ResilienciaConfig`:
+
+| Tipo de falha | BackOff | Esperas | Total |
+|---|---|---|---|
+| Transitória (banco ou conexão) | `ExponentialBackOff` (2 s, ×2, teto de 10 s) | 2 s, 4 s, 8 s | até 14 s de espera |
+| Inesperada | `FixedBackOff` (1 s) | 1 s, 1 s, 1 s | 3 s de espera |
+| Permanente | nenhum | — | vai direto para a DLQ |
+
+O limite é de **3 retentativas depois da entrega original**, ou seja, no máximo 4
+execuções do mesmo evento. A espera cresce para a falha transitória porque ela
+costuma ser sobrecarga ou indisponibilidade, que pede tempo para passar. A falha
+inesperada tem espera fixa e curta: se for um defeito de código, esperar mais não
+ajuda, e a DLQ preserva o evento sem bloquear a partição.
+
+### O que chega na DLQ
+
+O evento é publicado com a **mesma chave, o mesmo corpo e todos os cabeçalhos
+`ce_*` originais** (`ce_id` inclusive), mais o motivo da falha:
+
+| Cabeçalho | Conteúdo |
+|---|---|
+| `dlq_excecao` | classe da exceção, por exemplo `br.pucminas.aed.estoque.domain.SkuInexistenteException` |
+| `dlq_motivo` | mensagem da exceção |
+| `dlq_falhou_em` | instante da falha, ISO-8601 |
+| `kafka_dlt-original-topic`, `-partition`, `-offset`, `-consumer-group` | de onde o evento veio (cabeçalhos do Spring Kafka) |
+| `kafka_dlt-exception-cause-fqcn`, `-message`, `-stacktrace` | a exceção completa (cabeçalhos do Spring Kafka) |
+
+## Cenário 1 — falha permanente: SKU inexistente
+
+```powershell
+curl.exe -s -w "`nHTTP %{http_code}`n" -X POST localhost:8080/pedidos/confirmados `
+  -H "Content-Type: application/json" `
+  -d '{\"eventoId\":\"aaaaaaaa-0000-0000-0000-000000000001\",\"ocorridoEm\":\"2026-10-26T12:00:00Z\",\"pedidoId\":\"9001\",\"clienteId\":\"c-1\",\"valorTotal\":10.0,\"moeda\":\"BRL\",\"itens\":[{\"sku\":\"TEC-404\",\"quantidade\":1,\"preco\":10.0}]}'
+```
+
+Saída esperada:
+
+- `HTTP 202`;
+- no terminal do `servico-estoque`, **uma única** falha, sem retentativas:
+
+  ```text
+  WARN  RegistroDeFalhas : falha na execucao 1  chave=9001  offset=1  causa=SkuInexistenteException: SKU inexistente no estoque: TEC-404
+  ERROR RegistroDeFalhas : evento enviado para loja.pedido.confirmado.v1.dlq  chave=9001  offset=1  causa=SkuInexistenteException: SKU inexistente no estoque: TEC-404
+  ```
+- o estoque de `TEC-002` continua em 100 e `evento_processado` continua vazio, porque a transação inteira é desfeita:
+
+```powershell
+docker compose exec postgres psql -U aed -d aed -c "select * from estoque; select count(*) from evento_processado;"
+```
+
+- no Kafka UI (<http://localhost:8081>), tópico `loja.pedido.confirmado.v1.dlq`, uma mensagem com `ce_id = aaaaaaaa-0000-0000-0000-000000000001`, `dlq_excecao = ...SkuInexistenteException` e `dlq_motivo = SKU inexistente no estoque: TEC-404`.
+
+Para ler a DLQ pelo console:
+
+```powershell
+docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9094 --topic loja.pedido.confirmado.v1.dlq --from-beginning --timeout-ms 5000 --property print.headers=true --property print.key=true
+```
+
+## Cenário 2 — falha transitória: Postgres fora do ar
+
+```powershell
+docker compose stop postgres
+curl.exe -s -w "HTTP %{http_code}`n" -X POST localhost:8080/pedidos/confirmados `
+  -H "Content-Type: application/json" -d "@pedidos/pedido-4712.json"
+```
+
+Saída esperada, no terminal do `servico-estoque`: uma linha por execução que falha,
+espaçadas por 2 s, 4 s e 8 s de espera (mais 2 s de tentativa de conexão em cada
+execução):
+
+```text
+WARN  RegistroDeFalhas : falha na execucao 1  chave=4712  offset=0  causa=CannotCreateTransactionException: Could not open JDBC Connection for transaction
+WARN  RegistroDeFalhas : falha na execucao 2  chave=4712  offset=0  causa=CannotCreateTransactionException: Could not open JDBC Connection for transaction
+```n
+**Religue o Postgres antes de esgotar a janela (cerca de 20 s):**
+
+```powershell
+docker compose start postgres
+```
+
+Na próxima retentativa o evento é processado:
+
+```text
+INFO  EstoqueService : reserva aplicada  evento=22222222-2222-2222-2222-222222222222  pedido=4712
+```n
+O estoque de `TEC-002` cai em 2 e a DLQ continua sem o evento. Se o Postgres demorar mais que a
+janela, o evento vai para a DLQ com `dlq_excecao` apontando para a falha de
+conexão, e pode ser reprocessado como descrito abaixo.
+
+## Reprocessar a DLQ
+
+Corrija a causa (no cenário 1, cadastre o SKU) e rode o `servico-estoque` em modo
+de reprocessamento:
+
+```powershell
+docker compose exec postgres psql -U aed -d aed -c "INSERT INTO estoque (sku, quantidade) VALUES ('TEC-404', 10);"
+java -jar servico-estoque/target/servico-estoque-1.0.jar --demo.reprocessar-dlq=true
+```
+
+Nesse modo o aplicativo **não** consome o tópico normal (pode rodar com outro `servico-estoque` já no ar, sem rebalancear as partições). Ele lê a
+`loja.pedido.confirmado.v1.dlq`, republica cada evento em
+`loja.pedido.confirmado.v1` com a mesma chave, o mesmo corpo e os cabeçalhos
+`ce_*` originais (`ce_id` inclusive), confirma o que leu e encerra com a mensagem
+`reprocessamento concluido: N evento(s) republicado(s)`. Os cabeçalhos
+`dlq_*` e `kafka_dlt-*` não voltam ao fluxo.
+
+Depois, suba o `servico-estoque` normalmente: o evento é consumido como qualquer
+outro, e a deduplicação por `ce_id` garante que um evento já processado não debita
+o estoque de novo.
+
+- O reprocessamento lembra até onde leu (grupo `estoque-dlq-reprocessador`): rodar de novo não republica o que já foi republicado. Para reler tudo, use outro grupo: `--demo.dlq.grupo-reprocessador=outro-nome`.
+- Se o evento falhar de novo, ele volta para a DLQ.
+
+## Testes automatizados
+
+```bash
+mvn -f servico-estoque/pom.xml test
+```
+
+Kafka embutido e H2, sem Docker. Os intervalos de espera são reduzidos nos testes.
+
+| Teste | O que cobre |
+|---|---|
+| `CaminhoDeFalhaTest` 1 | Cenário 1: SKU inexistente vai à DLQ sem retentativa, com `ce_id`, `dlq_excecao`, `dlq_motivo` e `dlq_falhou_em` |
+| `CaminhoDeFalhaTest` 2 | quantidade ≤ 0 vai à DLQ sem retentativa |
+| `CaminhoDeFalhaTest` 3 | Cenário 2: duas falhas transitórias, sucesso na terceira execução, DLQ vazia |
+| `CaminhoDeFalhaTest` 4 | falha transitória que não passa: 1 + 3 execuções e depois DLQ |
+| `CaminhoDeFalhaTest` 5 | JSON inválido vai à DLQ com o corpo original |
+| `ReprocessamentoDlqTest` 6 | evento da DLQ volta ao tópico com o mesmo `ce_id` e é processado depois da correção |
+| `ReprocessamentoDlqTest` 7 | segunda execução do reprocessamento não republica nada |
+
+---
 # Aula 01 — Demonstração: o consumidor idempotente
 
 **AED — Arquitetura Reativa e Event-Driven · PUC Minas / IEC**
